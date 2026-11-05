@@ -1,0 +1,667 @@
+		local startSpeed = configuredSpeed * (1.35 + math.random() * 0.40)
+		drop.position = base + offset - wind * 0.35
+		drop.velocity = Vector3.new(wind.X * 0.15, -startSpeed, wind.Z * 0.15)
+		drop.targetHit = nil
+		drop.impactTime = nil
+		drop.age = 0
+		drop.maxAge = 0.95
+		if rayParams then
+			local ray = workspace:Raycast(drop.position, Vector3.new(0, -2500, 0), rayParams)
+			if ray and ray.Position.Y < drop.position.Y - 1 then
+				drop.targetHit = {
+					Position = ray.Position,
+					Normal = ray.Normal,
+					Material = ray.Material,
+				}
+				local fallDistance = math.max(drop.position.Y - ray.Position.Y, 1)
+				local gravity = 38
+				local discriminant = startSpeed * startSpeed + 2 * gravity * fallDistance
+				drop.impactTime = math.max(0.10, (-startSpeed + math.sqrt(discriminant)) / gravity)
+				drop.maxAge = drop.impactTime + 0.08
+			end
+		end
+		if drop.part and drop.part.Parent then
+			drop.part.Transparency = 0.32 + math.random() * 0.16
+			drop.part.Size = Vector3.new(0.022, 0.022, 1.0)
+			drop.part.CFrame = CFrame.lookAt(drop.position, drop.position + drop.velocity)
+		end
+	end
+	local sharedRayParams = RaycastParams.new()
+	sharedRayParams.FilterType = Enum.RaycastFilterType.Exclude
+	sharedRayParams.IgnoreWater = false
+	local sharedIgnoreChar = nil
+	local function refreshRayParams()
+		local char = client.Character
+		if sharedIgnoreChar ~= char or not sharedRayParams.FilterDescendantsInstances[1] then
+			sharedIgnoreChar = char
+			local ignore = { folder }
+			if char then table.insert(ignore, char) end
+			sharedRayParams.FilterDescendantsInstances = ignore
+		end
+		return sharedRayParams
+	end
+	local function updateSynchronizedRain(dt, base, dir, strength, groundFX)
+		if not groundFX then
+			destroySyncDrops()
+			return
+		end
+		local isRain = (active.rainNear or 0) > 0
+		if not isRain then
+			destroySyncDrops()
+			return
+		end
+		ensureSyncDrops()
+		syncImpactTimer = math.max(0, syncImpactTimer - dt)
+		local rainColor = WCFG().Rain and WCFG().Rain.Color
+		if not (rainColor and typeof(rainColor) == "Color3") then
+			rainColor = Color3.fromRGB(198, 220, 240)
+		end
+		local params = refreshRayParams()
+		for _, drop in ipairs(syncDrops) do
+			if not drop.position then resetSyncDrop(drop, base, dir, strength, params) end
+			local previous = drop.position
+			drop.age = drop.age + dt
+			drop.velocity = drop.velocity + Vector3.new(dir.X * strength * 0.008, -38, dir.Z * strength * 0.008) * dt
+			local nextPosition = previous + drop.velocity * dt
+			local hit = nil
+			if groundFX then
+				if drop.targetHit and drop.impactTime and drop.age >= drop.impactTime then
+					hit = drop.targetHit
+				else
+					local collision = workspace:Raycast(previous, nextPosition - previous, params)
+					if collision then
+						hit = {
+						Position = collision.Position,
+						Normal = collision.Normal,
+						Material = collision.Material,
+					}
+					end
+				end
+			end
+			if hit then
+				if syncImpactTimer <= 0 then
+					spawnGroundImpactAtHit(hit)
+					syncImpactTimer = 0.10
+				end
+				resetSyncDrop(drop, base, dir, strength, params)
+			else
+				drop.position = nextPosition
+				if drop.age >= drop.maxAge or drop.position.Y < base.Y - 80 then
+					resetSyncDrop(drop, base, dir, strength, params)
+				else
+					local travel = nextPosition - previous
+					local travelLength = math.clamp(travel.Magnitude * 3.0, 0.65, 2.8)
+					local velocityUnit = drop.velocity.Magnitude > 0 and drop.velocity.Unit or Vector3.new(0, -1, 0)
+					local midpoint = nextPosition - velocityUnit * (travelLength * 0.35)
+					drop.part.Color = rainColor
+					drop.part.Size = Vector3.new(0.022, 0.022, travelLength)
+					drop.part.CFrame = CFrame.lookAt(midpoint, midpoint + drop.velocity)
+					drop.part.Transparency = 0.32 + math.clamp(drop.age / drop.maxAge, 0, 1) * 0.18
+				end
+			end
+		end
+	end
+	local function getRainSurfaceSample(base, dir, strength)
+		local nearestTarget, nearestTime = nil, math.huge
+		for _, drop in ipairs(syncDrops) do
+			if drop.targetHit and drop.impactTime then
+				local distanceToImpact = math.abs(drop.impactTime - drop.age)
+				if distanceToImpact < nearestTime then
+					nearestTarget = drop.targetHit
+					nearestTime = distanceToImpact
+				end
+			end
+		end
+		if nearestTarget and nearestTime < 0.20 then
+			return nearestTarget
+		end
+		local params = refreshRayParams()
+		local look = (workspace.CurrentCamera or camera).CFrame.LookVector
+		look = Vector3.new(look.X, 0, look.Z)
+		if look.Magnitude < 0.01 then look = Vector3.new(0, 0, -1) end
+		look = look.Unit
+		local rightV = look:Cross(Vector3.new(0, 1, 0))
+		local forward = 4 + math.random() * 24
+		local side = (math.random() - 0.5) * 32
+		local sample = base + look * forward + rightV * side
+		local origin = sample + Vector3.new(0, 10, 0) - dir * strength * 0.20
+		local hit = workspace:Raycast(origin, Vector3.new(0, -2500, 0), params)
+		if hit and hit.Position.Y > base.Y - 250 then
+			return {
+				Position = hit.Position,
+				Normal = hit.Normal,
+				Material = hit.Material,
+			}
+		end
+		local centerHit = workspace:Raycast(base + Vector3.new(0, 10, 0), Vector3.new(0, -2500, 0), params)
+		if centerHit and centerHit.Position.Y > base.Y - 250 then
+			return {
+				Position = centerHit.Position,
+				Normal = centerHit.Normal,
+				Material = centerHit.Material,
+			}
+		end
+		return nil
+	end
+	local function updateGuaranteedGroundImpact(dt, base, dir, strength, groundFX)
+		fallbackImpactTimer = math.max(0, fallbackImpactTimer - dt)
+		if not groundFX or (active.rainNear or 0) <= 0 then
+			fallbackImpactTimer = 0
+			return
+		end
+		if fallbackImpactTimer > 0 then return end
+		local hit = getRainSurfaceSample(base, dir, strength)
+		if hit then
+			spawnGroundImpactAtHit(hit)
+		else
+			if not groundFXWarned then
+				groundFXWarned = true
+				warn("[RELAPSE][Weather] Rig not found, cannot parent emitters - ensure character is loaded before enabling weather")
+			end
+		end
+		fallbackImpactTimer = 0.18
+	end
+	local PRESETS = {
+		None         = { },
+		Rain         = {
+			rainFront = 60, rainNear = 120, rainMid = 170, rainFar = 230,
+			splash = 0, ripple = 0, mist = 8, impactRate = 5,
+			wind = 10, fog = 1800, fogColor = Color3.fromRGB(140, 155, 178),
+			moodBrightness = -0.06, moodSaturation = -0.15
+		},
+		Thunderstorm = {
+			rainFront = 100, rainNear = 200, rainMid = 280, rainFar = 380,
+			splash = 0, ripple = 0, mist = 14, impactRate = 8,
+			wind = 38, fog = 1100, fogColor = Color3.fromRGB(105, 118, 138),
+			lightning = 2.5,
+			moodBrightness = -0.10, moodSaturation = -0.25
+		},
+		Snow         = {
+			snow = 620, snowFar = 900,
+			wind = 6, fog = 1000, fogColor = Color3.fromRGB(220, 230, 242),
+			moodBrightness = -0.02, moodSaturation = -0.05
+		},
+		Sandstorm    = {
+			sand = 420,
+			wind = 70, fog = 220, fogColor = Color3.fromRGB(170, 150, 124),
+			moodBrightness = -0.03, moodSaturation = -0.1
+		},
+		CherryBlossom = {},
+	}
+	active = PRESETS.None
+	function Weather.applyPreset(name)
+		local w = WCFG()
+		w.Preset = name
+		active = PRESETS[name] or PRESETS.None
+		w.Enabled = (name ~= "None")
+		if not w.Enabled then
+			for _, e in pairs(emitters) do
+				if e and e.Parent then e.Enabled = false; e.Rate = 0 end
+			end
+			if flashLight then flashLight.Enabled = false; flashLight.Brightness = 0 end
+			if cc then cc.Enabled = false; cc.Brightness = 0 end
+			if rainCC then rainCC.Enabled = false end
+			if boltFolder then boltFolder:ClearAllChildren() end
+			pcall(function() if thunderSound then thunderSound:Stop(); thunderSound:Destroy(); thunderSound = nil end end)
+			pcall(function() if windSound then windSound:Stop(); windSound:Destroy(); windSound = nil end end)
+			pcall(function() if rainSound then rainSound:Stop(); rainSound.Volume = 0 end end)
+			flash = 0
+			_impactAccumulator = 0
+			fallbackImpactTimer = 0
+			clearGroundEffects()
+			destroySyncDrops()
+			return
+		end
+		if not ensureEmitters() then
+			warn("[RELAPSE][Weather] Unknown preset '" .. tostring(name) .. "', ignoring")
+			return
+		end
+		local groundFX = not (WCFG().GroundFX == false)
+		local rates = {
+			RainFront = active.rainFront, RainNear = active.rainNear, RainMid = active.rainMid, RainFar = active.rainFar,
+			Snow = active.snow, SnowFar = active.snowFar,
+			Sand = active.sand,
+			Splash = groundFX and active.splash or 0, Ripple = groundFX and active.ripple or 0, Mist = groundFX and active.mist or 0
+		}
+		local intensity = math.max(0, tonumber(w.Intensity) or 1)
+		local isRainPreset = (name == "Rain" or name == "Thunderstorm")
+		local isSnowPreset = (name == "Snow")
+		if isRainPreset and w.Rain and w.Rain.Rate then
+			local userRate = tonumber(w.Rain.Rate) or 60
+			local scale = userRate / 120
+			rates.RainFront = (active.rainFront or 0) * scale
+			rates.RainNear  = (active.rainNear  or 0) * scale
+			rates.RainMid   = (active.rainMid   or 0) * scale
+			rates.RainFar   = (active.rainFar   or 0) * scale
+		end
+		if isSnowPreset and w.Snow and w.Snow.Rate then
+			local userRate = tonumber(w.Snow.Rate) or 220
+			local scale = userRate / 620
+			rates.Snow    = (active.snow    or 0) * scale
+			rates.SnowFar = (active.snowFar or 0) * scale
+		end
+		for name, e in pairs(emitters) do
+			if e and e.Parent then
+				local rate = (rates[name] or 0) * intensity
+				e.Rate = rate
+				e.Enabled = rate > 0
+			end
+		end
+		if isRainPreset then
+			local rainSize = tonumber(w.Rain and w.Rain.Size) or 0.7
+			local rainWidth = tonumber(w.Rain and w.Rain.Width) or 28
+			local squashVal = -(rainWidth / 10)
+			for _, rname in ipairs({"RainFront","RainNear","RainMid","RainFar"}) do
+				local e = emitters[rname]
+				if e and e.Parent then
+					e.Size = NumberSequence.new(rainSize)
+					pcall(function() e.Squash = NumberSequence.new(squashVal) end)
+				end
+			end
+			local radius = tonumber(w.Rain and w.Rain.Radius) or 154
+			if rig then rig.Size = Vector3.new(radius * 2, 10, radius * 2) end
+			if rigMid then rigMid.Size = Vector3.new(radius * 2.4, 12, radius * 2.4) end
+			if rigFar then rigFar.Size = Vector3.new(radius * 3.2, 15, radius * 3.2) end
+			if not (w.Rain and w.Rain.Splash ~= false) then
+				if emitters.Splash then emitters.Splash.Rate = 0; emitters.Splash.Enabled = false end
+				if emitters.Ripple then emitters.Ripple.Rate = 0; emitters.Ripple.Enabled = false end
+			end
+		end
+		local rainColor = w.Rain and w.Rain.Color
+		if rainColor and typeof(rainColor) == "Color3" then
+			for _, name in ipairs({"RainFront", "RainNear", "RainMid", "RainFar"}) do
+				if emitters[name] then emitters[name].Color = ColorSequence.new(rainColor) end
+			end
+		end
+		local rainSpeed = math.max(10, tonumber(w.Rain and w.Rain.Speed) or 70)
+		if active.rainNear then
+			if emitters.RainFront then emitters.RainFront.Speed = NumberRange.new(rainSpeed * 1.15, rainSpeed * 1.55) end
+			if emitters.RainNear then emitters.RainNear.Speed = NumberRange.new(rainSpeed * 1.00, rainSpeed * 1.35) end
+			if emitters.RainMid then emitters.RainMid.Speed = NumberRange.new(rainSpeed * 0.90, rainSpeed * 1.20) end
+			if emitters.RainFar then emitters.RainFar.Speed = NumberRange.new(rainSpeed * 0.80, rainSpeed * 1.08) end
+		end
+		if isSnowPreset then
+			local snowColor = w.Snow and w.Snow.Color
+			if snowColor and typeof(snowColor) == "Color3" then
+				if emitters.Snow    then emitters.Snow.Color    = ColorSequence.new(snowColor) end
+				if emitters.SnowFar then emitters.SnowFar.Color = ColorSequence.new(snowColor) end
+			end
+			local snowSpeed = math.max(1, tonumber(w.Snow and w.Snow.Speed) or 12)
+			if emitters.Snow    then emitters.Snow.Speed    = NumberRange.new(snowSpeed * 0.8, snowSpeed * 1.2) end
+			if emitters.SnowFar then emitters.SnowFar.Speed = NumberRange.new(snowSpeed * 0.4, snowSpeed * 0.8) end
+			local snowSize = math.max(0.01, tonumber(w.Snow and w.Snow.Size) or 5) * 0.01
+			if emitters.Snow    then emitters.Snow.Size    = NumberSequence.new(snowSize) end
+			if emitters.SnowFar then emitters.SnowFar.Size = NumberSequence.new(snowSize * 0.55) end
+		end
+		if rainCC then rainCC.Enabled = false end
+		if rainSound and rainSound.Parent then
+			pcall(function()
+				rainSound.Volume = 0
+				rainSound:Play()
+				TweenService:Create(rainSound, TweenInfo.new(2), {Volume = 1.2}):Play()
+			end)
+		end
+		if name == "Thunderstorm" then
+			getgenv().__RELAPSE_WIND_PENDING = true
+		else
+			getgenv().__RELAPSE_WIND_PENDING = false
+			pcall(function() if windSound then windSound:Stop(); windSound:Destroy(); windSound = nil end end)
+		end
+		nextStrike = tick() + (active.lightning or 999)
+		local cam = resolveCamera()
+		rigAnchor = cam and cam.CFrame.Position or Vector3.new(0, 0, 0)
+	end
+	Weather.refresh = function() Weather.applyPreset(WCFG().Preset or "Rain") end
+	local _weatherGroundRayParams = RaycastParams.new()
+	_weatherGroundRayParams.FilterType = Enum.RaycastFilterType.Exclude
+	function Weather.step(dt)
+		local w = WCFG()
+		if not w.Enabled then return end
+		local cam = resolveCamera()
+		if not cam then return end
+		camera = cam
+		if not (rig and rig.Parent) then
+			if ensureEmitters() then Weather.applyPreset(w.Preset) end
+		end
+		tAcc = tAcc + dt
+		local followCam = (WCFG().FollowCamera ~= false)
+		local base = followCam and camera.CFrame.Position or (rigAnchor or camera.CFrame.Position)
+		local windPhase = tAcc * 0.08
+		local windNoise1 = math.noise(windPhase, 0, 0)
+		local windNoise2 = math.noise(windPhase * 0.3, 50, 0)
+		local gustStrength = 1 + math.max(0, math.noise(windPhase * 1.5, 100, 0)) * 1.8
+		local dir = CFrame.Angles(0, windPhase + windNoise1 * 1.2, 0).LookVector
+		local strength = (active.wind or 0) * gustStrength * (0.7 + windNoise2 * 0.6)
+		if (active.sand or 0) > 0 then
+			rig.Size = Vector3.new(180, 100, 14)
+			rig.CFrame = CFrame.lookAt(base - dir * 80 + Vector3.new(0, 10, 0), base + dir * 10)
+			if rigMid then rigMid.CFrame = rig.CFrame end
+			if rigFar then rigFar.CFrame = rig.CFrame end
+		elseif (active.snow or 0) > 0 or (active.snowFar or 0) > 0 then
+			rig.Size = Vector3.new(150, 26, 150)
+			rig.CFrame = CFrame.new(base + Vector3.new(0, 34, 0) - dir * strength * 0.4)
+			if rigMid then rigMid.CFrame = rig.CFrame end
+			if rigFar then rigFar.CFrame = rig.CFrame end
+		else
+			local radius = tonumber(w.Rain and w.Rain.Radius) or 154
+			rig.Size = Vector3.new(radius * 2, 10, radius * 2)
+			rig.CFrame = CFrame.new(base + Vector3.new(0, 45, 0) - dir * strength * 0.35)
+			if rigMid then
+				rigMid.Size = Vector3.new(radius * 2.4, 12, radius * 2.4)
+				rigMid.CFrame = CFrame.new(base + Vector3.new(0, 56, 0) - dir * strength * 0.5)
+			end
+			if rigFar then
+				rigFar.Size = Vector3.new(radius * 3.2, 15, radius * 3.2)
+				rigFar.CFrame = CFrame.new(base + Vector3.new(0, 68, 0) - dir * strength * 0.65)
+			end
+		end
+		local groundY = base.Y - 10
+		pcall(function()
+			_weatherGroundRayParams.FilterDescendantsInstances = { folder, client.Character }
+			local hit = workspace:Raycast(base + Vector3.new(0, 5, 0), Vector3.new(0, -300, 0), _weatherGroundRayParams)
+			if hit then groundY = hit.Position.Y + 0.1 end
+		end)
+		local groundFX = not (WCFG().GroundFX == false)
+		local _intensity = math.max(0, tonumber(w.Intensity) or 1)
+		if not groundFX then
+			_impactAccumulator = 0
+			fallbackImpactTimer = 0
+			clearGroundEffects()
+		end
+		pcall(updateSynchronizedRain, dt, base, dir, strength, groundFX)
+		pcall(updateGuaranteedGroundImpact, dt, base, dir, strength, groundFX)
+		groundUpdateAccumulator = groundUpdateAccumulator + dt
+		if groundUpdateAccumulator >= (1 / 24) then
+			local groundDt = groundUpdateAccumulator
+			groundUpdateAccumulator = 0
+			pcall(updateGroundEffects)
+			pcall(updatePuddles, groundDt)
+		end
+		if splashPart and splashPart.Parent and groundFX and (active.splash or 0) > 0 then
+			splashPart.CFrame = CFrame.new(base.X, groundY, base.Z)
+		end
+		if ripplePart and ripplePart.Parent and groundFX and (active.ripple or 0) > 0 then
+			ripplePart.CFrame = CFrame.new(base.X, groundY + 0.05, base.Z)
+		end
+		if mistPart and mistPart.Parent and groundFX then
+			mistPart.CFrame = CFrame.new(base.X, groundY + 1.5, base.Z)
+		end
+		for kind, e in pairs(emitters) do
+			if e and e.Parent and e.Enabled then
+				local windFactor, gravity
+				if kind == "RainFront" then
+					windFactor = 0.10
+					gravity = -62
+				elseif kind == "RainNear" then
+					windFactor = 0.14
+					gravity = -54
+				elseif kind == "RainMid" then
+					windFactor = 0.22
+					gravity = -46
+				elseif kind == "RainFar" then
+					windFactor = 0.34
+					gravity = -40
+				elseif kind == "Snow" or kind == "SnowFar" then
+					windFactor = 1.6
+					gravity = -1.2
+				elseif kind == "Sand" then
+					windFactor = 1.1
+					gravity = -2
+				elseif kind == "Mist" then
+					windFactor = 0.15
+					gravity = 0.3
+				else
+					windFactor = 0
+					gravity = 0
+				end
+				if kind == "Splash" or kind == "Ripple" then
+				else
+					e.Acceleration = Vector3.new(
+						dir.X * strength * windFactor,
+						gravity,
+						dir.Z * strength * windFactor
+					)
+				end
+			end
+		end
+		if getgenv().__RELAPSE_WIND_PENDING and not (windSound and windSound.Parent) then
+			pcall(function()
+				local ss = game:GetService("SoundService")
+				local donor = nil
+				for _, v in ipairs(ss:GetDescendants()) do
+					if v:IsA("Sound") and v.SoundId ~= "" and v.Name ~= "RELAPSE_Thunder" then donor = v; break end
+				end
+				if not donor then
+					for _, v in ipairs(workspace:GetDescendants()) do
+						if v:IsA("Sound") and v.SoundId ~= "" then donor = v; break end
+					end
+				end
+				local s = donor and donor:Clone() or Instance.new("Sound")
+				s.Name               = "RELAPSE_Wind"
+				s.SoundId            = "rbxassetid://665381802"
+				s.Volume             = 1.0
+				s.Looped             = true
+				s.RollOffMaxDistance = 10000
+				s.Parent             = ss
+				s:Play()
+				windSound = s
+			end)
+		end
+		if active.lightning and tick() >= nextStrike then
+			flash = 0.65
+			if flashLight then flashLight.Enabled = true end
+			spawnBolt()
+			if math.random() < 0.35 then task.delay(0.08 + math.random() * 0.1, spawnBolt) end
+			if thunderSound and thunderSound.Parent then
+				pcall(function()
+					thunderSound.Volume = math.clamp((getgenv().RELAPSE.weather.ThunderVolume or 85) / 100, 0, 1)
+					thunderSound:Stop(); thunderSound.TimePosition = 0; thunderSound:Play()
+				end)
+			else
+				pcall(function()
+					local ss = game:GetService("SoundService")
+					local donor = nil
+					for _, v in ipairs(ss:GetDescendants()) do
+						if v:IsA("Sound") and v.SoundId ~= "" then donor = v; break end
+					end
+					if not donor then
+						for _, v in ipairs(workspace:GetDescendants()) do
+							if v:IsA("Sound") and v.SoundId ~= "" then donor = v; break end
+						end
+					end
+					local s = donor and donor:Clone() or Instance.new("Sound")
+					s.Name               = "RELAPSE_Thunder"
+					s.SoundId            = "rbxassetid://6458307118"
+					s.Volume             = math.clamp((getgenv().RELAPSE.weather.ThunderVolume or 85) / 100, 0, 1)
+					s.Looped             = false
+					s.RollOffMaxDistance = 10000
+					s.Parent             = ss
+					s:Play()
+					thunderSound = s
+				end)
+			end
+			nextStrike = tick() + 2.5
+		end
+		if flash > 0 then
+			flash = math.max(0, flash - dt * 2.2)
+			if flashLight then
+				flashLight.Enabled = flash > 0.01
+				flashLight.Brightness = flash * 16
+				flashLight.Range = 60 + flash * 160
+			end
+			if cc then
+				cc.Enabled = flash > 0.01
+				cc.Brightness = flash * 0.5
+			end
+		end
+	end
+	local cherryPetals    = {}
+	local cherryConn      = nil
+	local cherryStop
+	local function cherryGetCfg()
+		return getgenv().RELAPSE.weather.Cherry
+	end
+	local function cherryMakePetal()
+		local p = Instance.new("Part")
+		p.Name        = "CherryPetal"
+		p.Anchored    = true
+		p.CanCollide  = false
+		p.Locked      = true
+		p.Massless    = true
+		p.CastShadow  = false
+		pcall(function() p.CanQuery = false end)
+		pcall(function() p.CanTouch = false end)
+		p.Size        = Vector3.new(0.22, 0.04, 0.18)
+		p.Material    = Enum.Material.SmoothPlastic
+		local cfg     = cherryGetCfg()
+		p.Color       = cfg.Color or Color3.fromRGB(255, 182, 193)
+		p.Transparency = 0.05
+		p.Parent      = workspace
+		return p
+	end
+	local function cherryRandomPosition(base, radius)
+		local angle  = math.random() * math.pi * 2
+		local dist   = math.sqrt(math.random()) * radius
+		local height = 18 + math.random() * 22
+		return base + Vector3.new(math.cos(angle) * dist, height, math.sin(angle) * dist)
+	end
+	local function cherrySpawnPetal(base)
+		local cfg    = cherryGetCfg()
+		local radius = tonumber(cfg.Radius) or 50
+		local speed  = tonumber(cfg.FallSpeed) or 10
+		local p      = cherryMakePetal()
+		local pos    = cherryRandomPosition(base, radius)
+		local swayPhase = math.random() * math.pi * 2
+		local swaySpeed = 0.8 + math.random() * 1.2
+		local swayAmp   = 1.2 + math.random() * 2.0
+		local spinSpeed = (math.random() < 0.5 and 1 or -1) * (60 + math.random() * 120)
+		local fallSpeed = speed * (0.7 + math.random() * 0.6)
+		p.CFrame = CFrame.new(pos) * CFrame.Angles(math.random() * math.pi, math.random() * math.pi, math.random() * math.pi)
+		table.insert(cherryPetals, {
+			part      = p,
+			pos       = pos,
+			age       = 0,
+			maxAge    = 12 + math.random() * 8,
+			swayPhase = swayPhase,
+			swaySpeed = swaySpeed,
+			swayAmp   = swayAmp,
+			spinSpeed = spinSpeed,
+			fallSpeed = fallSpeed,
+		})
+	end
+	local function cherryStart()
+		if cherryConn then return end
+		local cfg = cherryGetCfg()
+		local spawnTimer  = 0
+		local tAccCherry  = 0
+		local _cherrySlowFrame = 0
+		cherryConn = RunService.RenderStepped:Connect(function(dt)
+			LPH_ATTRIBUTES(PRESET(FAST), OPTIMIZE(3), VM(NONE))
+			local ok = pcall(function()
+				cfg = cherryGetCfg()
+				if not cfg.Enabled then
+					cherryStop()
+					return
+				end
+				tAccCherry = tAccCherry + dt
+				_cherrySlowFrame = _cherrySlowFrame + 1
+				local doSlowProps = (_cherrySlowFrame % 4 == 0)
+				local base    = workspace.CurrentCamera and workspace.CurrentCamera.CFrame.Position or Vector3.new(0, 0, 0)
+				local maxP    = math.max(1, tonumber(cfg.MaxPetals) or 60)
+				local rate    = math.max(0.1, tonumber(cfg.SpawnRate) or 8)
+				spawnTimer = spawnTimer + dt
+				local interval = 1 / rate
+				while spawnTimer >= interval and #cherryPetals < maxP do
+					cherrySpawnPetal(base)
+					spawnTimer = spawnTimer - interval
+				end
+				if spawnTimer > interval then spawnTimer = 0 end
+				local color = cfg.Color or Color3.fromRGB(255, 182, 193)
+				for i = #cherryPetals, 1, -1 do
+					local petal = cherryPetals[i]
+					local p = petal.part
+					if not p or not p.Parent then
+						table.remove(cherryPetals, i)
+					else
+						petal.age = petal.age + dt
+						if petal.age >= petal.maxAge then
+							p:Destroy()
+							table.remove(cherryPetals, i)
+						else
+							local sway = math.sin(tAccCherry * petal.swaySpeed + petal.swayPhase) * petal.swayAmp
+							local newX = petal.pos.X + sway * dt
+							local newY = petal.pos.Y - petal.fallSpeed * dt
+							local newZ = petal.pos.Z + math.cos(tAccCherry * petal.swaySpeed * 0.7 + petal.swayPhase) * petal.swayAmp * 0.4 * dt
+							petal.pos = Vector3.new(newX, newY, newZ)
+							local spinRad = math.rad(petal.spinSpeed * dt)
+							p.CFrame = CFrame.new(petal.pos) * CFrame.Angles(spinRad * 0.6, spinRad, spinRad * 0.3)
+							if doSlowProps then
+								local t = petal.age / petal.maxAge
+								p.Transparency = t > 0.8 and (t - 0.8) / 0.2 or 0.05
+								p.Color = color
+							end
+						end
+					end
+				end
+			end)
+			if not ok then warn("[RELAPSE][Cherry] step error") end
+		end)
+	end
+	cherryStop = function()
+		if cherryConn then
+			cherryConn:Disconnect()
+			cherryConn = nil
+		end
+		for _, petal in ipairs(cherryPetals) do
+			if petal.part and petal.part.Parent then
+				petal.part:Destroy()
+			end
+		end
+		cherryPetals = {}
+	end
+	local _origApplyPreset = Weather.applyPreset
+	Weather.applyPreset = function(name)
+		if name == "CherryBlossom" then
+			_origApplyPreset("None")
+			local cfg = getgenv().RELAPSE.weather
+			cfg.Preset  = "CherryBlossom"
+			cfg.Enabled = true
+			cfg.Cherry.Enabled = true
+			cherryStart()
+		else
+			if getgenv().RELAPSE.weather.Preset == "CherryBlossom" then
+				getgenv().RELAPSE.weather.Cherry.Enabled = false
+				cherryStop()
+			end
+			_origApplyPreset(name)
+		end
+	end
+	Weather.cherryStop = cherryStop
+	function Weather.destroy()
+		if folder then pcall(function() folder:Destroy() end) end
+		if cc then pcall(function() cc:Destroy() end) end
+		if rainCC then pcall(function() rainCC:Destroy() end) end
+		pcall(function() if thunderSound then thunderSound:Stop(); thunderSound:Destroy() end end)
+		thunderSound = nil
+		getgenv().__RELAPSE_THUNDER_SOUNDS = nil
+		pcall(function() if windSound then windSound:Stop(); windSound:Destroy() end end)
+		windSound = nil
+		getgenv().__RELAPSE_WIND_PENDING = false
+		pcall(function() if rainSound then rainSound:Stop() end end)
+		folder, rig, rigMid, rigFar, boltFolder, impactFolder, dropFolder, flashLight, cc, rainCC, thunderSound, rainSound, windSound = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+		splashPart, mistPart, ripplePart = nil, nil, nil
+		clearGroundEffects()
+		groundEffects = {}
+		destroySyncDrops()
+		fallbackImpactTimer = 0
+		_impactAccumulator = 0
+		emitters = {}
+		pcall(cherryStop)
+	end
+	local weatherConn = RunService.RenderStepped:Connect(function(dt)
+		LPH_ATTRIBUTES(PRESET(FAST), OPTIMIZE(3), VM(NONE))
+		local ok, err = pcall(Weather.step, dt)
+		if not ok then warn("[RELAPSE][Weather]", err) end
+	end)
+	getgenv().__RELAPSE_RUNTIME.weatherConn = weatherConn
+	getgenv().__RELAPSE_RUNTIME.weatherDestroy = Weather.destroy
