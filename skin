@@ -1,0 +1,645 @@
+	tabSkin.leftCol.Size = UDim2.new(1, -8, 1, 0)
+	local _isDT  = table.find({72815132775027, 75159825516372, 90724401598574}, game.PlaceId) ~= nil
+local hcGunSkins   = {"Default","Adurite","Amethyst","Arctic","Arsenic","Ascension","Binary","Black Cat","Black Ice","Blacksteel Dragon","Candy Cane","Crimson Fangs","Cupid","Deathbringer","Ember","Floral","Green Tint","Hallows","Heartbringer","Hell Dragon","Hell Hound","Hello Kitty","Hexagram","Kirumi","Kitty","Lightbringer","Lovestruck","Phoenix","Poseidon","Radiation","Shiryus Breath","Snow Dragon","Strawberry Shortcake","Void","Void Dragon","Volcanic Ashes","Voxel"}
+local hcKnifeSkins = {"Default","Beta","Bitcoin","Fishbone","Nightblade"}
+local hcBeamSkins  = {"Default","Beta","Blue","Green","Hallows","Kirumi","Kitty","Orange","Rainbow","Red"}
+local hcWeapons    = {"DoubleBarrel","Revolver","TacticalShotgun","SMG","Shotgun","Silencer"}
+if not getgenv().Flags then getgenv().Flags = {} end
+local Flags = setmetatable({}, {
+    __index    = function(_, k) return getgenv().Flags[k] end,
+    __newindex = function(_, k, v) getgenv().Flags[k] = v end,
+})
+local lp = client
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+hcProcessed = setmetatable({}, { __mode = "k" })
+local HC_FLIP_SKINS = {
+    ["Arsenic"]=true, ["Binary"]=true, ["Black Ice"]=true,
+    ["Hell Dragon"]=true, ["Hello Kitty"]=true, ["Hexagram"]=true,
+    ["Snow Dragon"]=true, ["Void"]=true, ["Volcanic Ashes"]=true,
+    ["Shiryus Breath"]=true, ["Adurite"]=true, ["Floral"]=true,
+}
+local hcGetSkinModel = function(weaponName, skinName)
+    if not skinName or skinName == "" or skinName == "Default" or skinName == "None" then return nil end
+    local wraps = ReplicatedStorage:FindFirstChild("Wraps")
+    if not wraps then return nil end
+    local folder = wraps:FindFirstChild("[" .. weaponName .. "]")
+    if not folder then return nil end
+    return folder:FindFirstChild(skinName)
+end
+local hcEnsurePrimaryPart = function(m)
+    if not m then return nil end
+    if m:IsA("Model") then
+        if not m.PrimaryPart or not m.PrimaryPart:IsA("BasePart") then
+            local best, bestSize = nil, 0
+            for _, p in ipairs(m:GetDescendants()) do
+                if p:IsA("BasePart") and p.Transparency < 0.9 then
+                    local vol = p.Size.X * p.Size.Y * p.Size.Z
+                    if vol > bestSize then bestSize = vol; best = p end
+                end
+            end
+            if not best then best = m:FindFirstChildWhichIsA("BasePart") end
+            m.PrimaryPart = best
+        end
+        return m.PrimaryPart
+    elseif m:IsA("BasePart") then
+        return m
+    end
+    return nil
+end
+local hcPrepParts = function(model)
+    local neonAmount = (Flags["HCNeonAmount"] or 0) / 100
+    for _, p in ipairs(model:GetDescendants()) do
+        if p:IsA("BasePart") then
+            p.CanCollide = false; p.Anchored = false; p.Massless = true
+            if neonAmount > 0 then
+                p.Material = Enum.Material.Neon
+                p.Transparency = math.max(0, 1 - neonAmount)
+            end
+        end
+    end
+end
+local hcScaleModelToFit = function(model, targetSize)
+    local minVec, maxVec
+    local function processPart(p)
+        if not p or not p:IsA("BasePart") then return end
+        local half = p.Size * 0.5
+        local corners = {
+            p.CFrame * Vector3.new( half.X,  half.Y,  half.Z), p.CFrame * Vector3.new( half.X,  half.Y, -half.Z),
+            p.CFrame * Vector3.new( half.X, -half.Y,  half.Z), p.CFrame * Vector3.new( half.X, -half.Y, -half.Z),
+            p.CFrame * Vector3.new(-half.X,  half.Y,  half.Z), p.CFrame * Vector3.new(-half.X,  half.Y, -half.Z),
+            p.CFrame * Vector3.new(-half.X, -half.Y,  half.Z), p.CFrame * Vector3.new(-half.X, -half.Y, -half.Z),
+        }
+        for _, c in ipairs(corners) do
+            if not minVec then minVec = c; maxVec = c
+            else
+                minVec = Vector3.new(math.min(minVec.X,c.X), math.min(minVec.Y,c.Y), math.min(minVec.Z,c.Z))
+                maxVec = Vector3.new(math.max(maxVec.X,c.X), math.max(maxVec.Y,c.Y), math.max(maxVec.Z,c.Z))
+            end
+        end
+    end
+    processPart(model)
+    for _, p in ipairs(model:GetDescendants()) do processPart(p) end
+    if not minVec or not maxVec then return end
+    local modelSize = maxVec - minVec
+    local scale = math.min(targetSize.X/math.max(modelSize.X,0.001), targetSize.Y/math.max(modelSize.Y,0.001), targetSize.Z/math.max(modelSize.Z,0.001))
+    if scale >= 1 then return end
+    local primaryPart = model:IsA("Model") and model.PrimaryPart or nil
+    if model:IsA("BasePart") then primaryPart = model end
+    local anchorCF = primaryPart and primaryPart.CFrame or CFrame.new((minVec+maxVec)*0.5)
+    for _, p in ipairs(model:GetDescendants()) do
+        if p:IsA("BasePart") then
+            local relPos = anchorCF:PointToObjectSpace(p.CFrame.Position)
+            p.Size = p.Size * scale; p.CFrame = anchorCF * CFrame.new(relPos * scale)
+        end
+    end
+    if model:IsA("BasePart") then
+        local relPos = anchorCF:PointToObjectSpace(model.CFrame.Position)
+        model.Size = model.Size * scale; model.CFrame = anchorCF * CFrame.new(relPos * scale)
+    end
+end
+local hcApplyModelOnHolder = function(holder, skinModel)
+    if not holder or not skinModel then return end
+    local handle = holder:FindFirstChild("Handle")
+    if not handle or not handle:IsA("BasePart") then return end
+    local default = holder:FindFirstChild("Default")
+    local existing = holder:FindFirstChild("_OverridePart")
+    if existing then pcall(function() existing:Destroy() end) end
+    if getgenv().cacheOriginalSkin then getgenv().cacheOriginalSkin(holder) end
+    local clone = skinModel:Clone()
+    clone.Name = "_OverridePart"
+    local pp = hcEnsurePrimaryPart(clone)
+    if not pp or not pp:IsA("BasePart") then
+        if clone:IsA("BasePart") then pp = clone
+        else
+            for _, desc in ipairs(clone:GetDescendants()) do if desc:IsA("BasePart") then pp = desc; break end end
+            if clone:IsA("Model") then clone.PrimaryPart = pp end
+            if not pp then clone:Destroy(); return end
+        end
+    end
+    hcPrepParts(clone)
+    pp.Anchored = true
+    local targetCF = handle.CFrame
+    if default and default:IsA("BasePart") then
+        targetCF = default.CFrame
+        local offset = default.CFrame:PointToObjectSpace(handle.CFrame.Position)
+        if math.abs(offset.Y)>0.01 or math.abs(offset.Z)>0.01 or math.abs(offset.X)>0.01 then
+            targetCF = default.CFrame * CFrame.new(offset)
+        end
+        hcScaleModelToFit(clone, Vector3.new(
+            math.max(default.Size.X, handle.Size.X),
+            math.max(default.Size.Y, handle.Size.Y),
+            math.max(default.Size.Z, handle.Size.Z)
+        ))
+    end
+    if (holder.Name:lower():find("tactical") or holder.Name:lower():find("tac"))
+        and HC_FLIP_SKINS[skinModel.Name] then
+        targetCF = targetCF * CFrame.Angles(0, math.rad(180), 0)
+    end
+    if clone:IsA("Model") then clone:SetPrimaryPartCFrame(targetCF) else pp.CFrame = targetCF end
+    clone.Parent = holder
+    local function weldAllParts(root)
+        local parts = {}
+        if root:IsA("BasePart") then table.insert(parts, root) end
+        for _, desc in ipairs(root:GetDescendants()) do
+            if desc:IsA("BasePart") then table.insert(parts, desc) end
+        end
+        for _, part in ipairs(parts) do
+            if part ~= pp then
+                local wi = Instance.new("WeldConstraint")
+                wi.Part0 = pp
+                wi.Part1 = part
+                wi.Parent = pp
+            end
+            local w = Instance.new("WeldConstraint")
+            w.Name = "RELAPSE_SkinWeld"
+            w.Part0 = handle
+            w.Part1 = part
+            w.Parent = handle
+        end
+    end
+    weldAllParts(clone)
+    local skinParts = {}
+    if clone:IsA("BasePart") then table.insert(skinParts, clone) end
+    for _, p in ipairs(clone:GetDescendants()) do
+        if p:IsA("BasePart") then table.insert(skinParts, p) end
+    end
+    for _, p in ipairs(skinParts) do
+        p.Anchored = true
+        p.Massless = true
+    end
+    handle.Transparency = 1
+    if default and default:IsA("BasePart") then default.Transparency = 1 end
+    task.defer(function()
+        for _, p in ipairs(skinParts) do
+            if p and p.Parent then
+                p.Anchored = false
+            end
+        end
+    end)
+end
+local hcApplyKnifeModel = function(holder, skinModel)
+    if not holder or not skinModel then return end
+    local handle = holder:FindFirstChild("Handle")
+    if not handle or not handle:IsA("BasePart") then return end
+    local default = holder:FindFirstChild("Default")
+    local existing = holder:FindFirstChild("_OverridePart")
+    if existing then pcall(function() existing:Destroy() end) end
+    if getgenv().cacheOriginalSkin then getgenv().cacheOriginalSkin(holder) end
+    local clone = skinModel:Clone()
+    clone.Name = "_OverridePart"
+    local pp = hcEnsurePrimaryPart(clone)
+    if not pp or not pp:IsA("BasePart") then
+        if clone:IsA("BasePart") then pp = clone
+        else
+            for _, desc in ipairs(clone:GetDescendants()) do if desc:IsA("BasePart") then pp = desc; break end end
+            if clone:IsA("Model") and pp then clone.PrimaryPart = pp end
+            if not pp then clone:Destroy(); return end
+        end
+    end
+    hcPrepParts(clone)
+    pp.Anchored = true
+    local targetCF = handle.CFrame
+    if default and default:IsA("BasePart") then
+        targetCF = default.CFrame
+        hcScaleModelToFit(clone, default.Size)
+    end
+    if clone:IsA("Model") then clone:SetPrimaryPartCFrame(targetCF) else pp.CFrame = targetCF end
+    clone.Parent = holder
+    local function weldAllParts(root)
+        local parts = {}
+        if root:IsA("BasePart") then table.insert(parts, root) end
+        for _, desc in ipairs(root:GetDescendants()) do
+            if desc:IsA("BasePart") then table.insert(parts, desc) end
+        end
+        for _, part in ipairs(parts) do
+            if part ~= pp then
+                local wi = Instance.new("WeldConstraint")
+                wi.Part0 = pp
+                wi.Part1 = part
+                wi.Parent = pp
+            end
+            local w = Instance.new("WeldConstraint")
+            w.Name = "RELAPSE_SkinWeld"
+            w.Part0 = handle
+            w.Part1 = part
+            w.Parent = handle
+        end
+    end
+    weldAllParts(clone)
+    local skinParts = {}
+    if clone:IsA("BasePart") then table.insert(skinParts, clone) end
+    for _, p in ipairs(clone:GetDescendants()) do
+        if p:IsA("BasePart") then table.insert(skinParts, p) end
+    end
+    for _, p in ipairs(skinParts) do
+        p.Anchored = true
+        p.Massless = true
+    end
+    handle.Transparency = 1
+    if default and default:IsA("BasePart") then default.Transparency = 1 end
+    task.defer(function()
+        for _, p in ipairs(skinParts) do
+            if p and p.Parent then
+                p.Anchored = false
+            end
+        end
+    end)
+end
+local hcRainbowBeamItems = {}
+local hcBeamHue = 0
+local updateHcBeam = function()
+    if not Flags["HCBeamEnabled"] or not next(hcRainbowBeamItems) then return end
+    hcBeamHue = (hcBeamHue + 0.01) % 1
+    local color = Color3.fromHSV(hcBeamHue, 1, 1)
+    local seq = ColorSequence.new(color)
+    for item in pairs(hcRainbowBeamItems) do
+        if item.Parent then if item:IsA("Beam") then item.Color = seq end
+        else hcRainbowBeamItems[item] = nil end
+    end
+end
+task.spawn(function()
+    while task.wait(0.05) do
+        if Flags["HCBeamEnabled"] and next(hcRainbowBeamItems) then updateHcBeam() end
+    end
+end)
+local hcApplySkin = function(tool)
+    task.spawn(function()
+        task.wait(0.1)
+        if not Flags["HCSkinEnabled"] then return end
+        if not tool or not tool:IsA("Tool") then return end
+        local weaponName = tool.Name:match("^%[(.+)%]$")
+        if not weaponName then return end
+        local skinName = Flags["HC_" .. weaponName]
+        if skinName and skinName ~= "" and skinName ~= "Default" then
+            if skinName == "None" then
+                local handle = tool:FindFirstChild("Handle")
+                if handle then handle.Transparency = 1 end
+                return
+            end
+            local skinModel = hcGetSkinModel(weaponName, skinName)
+            if skinModel then hcApplyModelOnHolder(tool, skinModel) end
+        else
+            if getgenv().restoreOriginalSkin then getgenv().restoreOriginalSkin(tool) end
+            local handle = tool:FindFirstChild("Handle")
+            if handle then handle.Transparency = 0 end
+            local override = tool:FindFirstChild("_OverridePart")
+            if override then override:Destroy() end
+        end
+    end)
+end
+local hcApplyKnife = function(_tool)
+    task.spawn(function()
+        task.wait(0.1)
+        if not Flags["HCSkinEnabled"] then return end
+        if not _tool or not _tool:IsA("Tool") then return end
+        local isKnife = _tool.Name == "[Knife]" or _tool.Name:lower():find("knife")
+        if not isKnife then return end
+        local knifeSkin = Flags["HC_Knife"]
+        if knifeSkin and knifeSkin ~= "" and knifeSkin ~= "Default" and knifeSkin ~= "None" then
+            local skinModel = nil
+            local knives = ReplicatedStorage:FindFirstChild("Knives")
+            if knives then skinModel = knives:FindFirstChild(knifeSkin) end
+            if not skinModel then
+                local assets = ReplicatedStorage:FindFirstChild("Assets")
+                if assets then
+                    local sa = assets:FindFirstChild("SkinAssets")
+                    if sa then
+                        local kf = sa:FindFirstChild("Knives") or sa:FindFirstChild("Knife")
+                        if kf then skinModel = kf:FindFirstChild(knifeSkin) end
+                    end
+                end
+            end
+            if skinModel then hcApplyKnifeModel(_tool, skinModel) end
+        else
+            if getgenv().restoreOriginalSkin then getgenv().restoreOriginalSkin(_tool) end
+            local handle = _tool:FindFirstChild("Handle")
+            if handle then handle.Transparency = 0 end
+            local override = _tool:FindFirstChild("_OverridePart")
+            if override then override:Destroy() end
+        end
+    end)
+end
+local hcApplyBeams = function(tool) end
+local hcBeamCodes = {
+    DoubleBarrel = "109d1326878cc594bc1bb42d126250810999782f",
+    Revolver = "539db315b53f77390c0aa74773158e25bedcdd6e",
+    Shotgun = "b415a7273aa86cbc2adc445fde5435eb5afababa",
+    SMG = "005af87725b42ac4ca8103d11af6bf0c7d55f7b3",
+    TacticalShotgun = "109d1326878cc594bc1bb42d126250810999782f_tac",
+    Silencer = "109d1326878cc594bc1bb42d126250810999782f_sil",
+}
+local hcApplySubscription = function()
+    if not Flags["HCSubEnabled"] then return end
+    local dataFolder = lp:FindFirstChild("DataFolder")
+    if not dataFolder then return end
+    local subscriptionFolder = dataFolder:FindFirstChild("Subscription")
+    if not subscriptionFolder then return end
+    local hasSub = subscriptionFolder:FindFirstChild("HasSubscription")
+    if hasSub and hasSub:IsA("BoolValue") then hasSub.Value = true end
+    local subData = subscriptionFolder:FindFirstChild("SubscriptionData")
+    if subData and subData:IsA("NumberValue") then subData.Value = 67 end
+    local subStreak = subscriptionFolder:FindFirstChild("SubscriptionStreak")
+    if subStreak and subStreak:IsA("NumberValue") then subStreak.Value = 67 end
+end
+local hcApplyBeamChanger = function()
+    if not Flags["HCBeamEnabled"] then return end
+    local dataFolder = lp:FindFirstChild("DataFolder")
+    if not dataFolder then return end
+    local inventoryData = dataFolder:FindFirstChild("InventoryData")
+    if not inventoryData then return end
+    local bulletBeams = inventoryData:FindFirstChild("BulletBeams")
+    local equippedBulletBeams = dataFolder:FindFirstChild("EquippedBulletBeams")
+    if bulletBeams and bulletBeams:IsA("StringValue") then
+        local bulletBeamData = {}
+        for _, wep in ipairs({"DoubleBarrel","Revolver","TacticalShotgun","SMG","Shotgun","Silencer"}) do
+            local beamSkin = Flags["HCBeam_" .. wep]
+            if beamSkin and beamSkin ~= "" and beamSkin ~= "Default" and beamSkin ~= "None" then
+                local code = hcBeamCodes[wep]
+                if code then bulletBeamData[code] = { Name = beamSkin } end
+            end
+        end
+        if next(bulletBeamData) then
+            bulletBeams.Value = HttpService:JSONEncode(bulletBeamData)
+        end
+    end
+    if equippedBulletBeams and equippedBulletBeams:IsA("StringValue") then
+        local equippedData = {}
+        for _, wep in ipairs({"DoubleBarrel","Revolver","TacticalShotgun","SMG","Shotgun","Silencer"}) do
+            local beamSkin = Flags["HCBeam_" .. wep]
+            if beamSkin and beamSkin ~= "" and beamSkin ~= "Default" and beamSkin ~= "None" then
+                local code = hcBeamCodes[wep]
+                if code then equippedData["[" .. wep .. "]"] = code end
+            end
+        end
+        if next(equippedData) then
+            equippedBulletBeams.Value = HttpService:JSONEncode(equippedData)
+        end
+    end
+end
+task.spawn(function()
+    while task.wait(1) do
+        if Flags["HCSubEnabled"] then pcall(hcApplySubscription) end
+        if Flags["HCBeamEnabled"] then pcall(hcApplyBeamChanger) end
+    end
+end)
+local _hcSkinMaintSkip = 0
+local _lastHCSkinEnabled = false
+RunService.RenderStepped:Connect(function()
+	LPH_ATTRIBUTES(PRESET(FAST), OPTIMIZE(3), VM(NONE))
+	local skinCfg = getgenv().RELAPSE.skins.HC
+	if not (skinCfg and skinCfg.Enabled) then return end
+	
+    _hcSkinMaintSkip = _hcSkinMaintSkip + 1
+    if _hcSkinMaintSkip % 15 ~= 0 then return end
+    local char = lp.Character
+    if not char then return end
+    local enabled = Flags["HCSkinEnabled"]
+    if enabled ~= _lastHCSkinEnabled then
+        _lastHCSkinEnabled = enabled
+        if not enabled then
+            task.spawn(function()
+                for _, obj in ipairs(char:GetDescendants()) do
+                    if (obj:IsA("Tool") or obj:IsA("Folder") or obj:IsA("Model")) and obj:FindFirstChild("_OverridePart") then
+                        if getgenv().restoreOriginalSkin then pcall(getgenv().restoreOriginalSkin, obj) end
+                    end
+                end
+            end)
+        end
+    end
+    if not enabled then return end
+    for _, obj in ipairs(char:GetDescendants()) do
+        if (obj:IsA("Tool") or obj:IsA("Folder") or obj:IsA("Model")) and obj:FindFirstChild("_OverridePart") then
+            local _hh = obj:FindFirstChild("Handle")
+            if _hh and _hh:IsA("BasePart") and _hh.Transparency < 1 then _hh.Transparency = 1 end
+            local d = obj:FindFirstChild("Default")
+            if d and d:IsA("BasePart") and d.Transparency < 1 then d.Transparency = 1 end
+        end
+    end
+end)
+hcOnToolAdded = function(_tool)
+    if hcProcessed[_tool] then return end
+    hcProcessed[_tool] = true
+    hcApplySkin(_tool)
+    hcApplyKnife(_tool)
+    hcApplyBeams(_tool)
+end
+local HandleMap = { DB_HANDLE = "DoubleBarrel", REV_HANDLE = "Revolver" }
+local hcApplyHandles = function(character)
+    for _hh, weaponName in pairs(HandleMap) do
+        task.defer(function()
+            if not Flags["HCSkinEnabled"] then return end
+            local skinName = Flags["HC_" .. weaponName]
+            local handleFolder = character:FindFirstChild(_hh) or character:WaitForChild(_hh, 5)
+            if handleFolder and skinName and skinName ~= "" and skinName ~= "Default" and skinName ~= "None" then
+                local skinModel = hcGetSkinModel(weaponName, skinName)
+                if skinModel then hcApplyModelOnHolder(handleFolder, skinModel) end
+            elseif handleFolder and (not skinName or skinName == "" or skinName == "Default") then
+                if handleFolder:FindFirstChild("_OverridePart") then
+                    if getgenv().restoreOriginalSkin then getgenv().restoreOriginalSkin(handleFolder) end
+                end
+            end
+        end)
+    end
+end
+local hcConnectCharacter = function(char)
+    char.ChildAdded:Connect(function(child)
+        if child:IsA("Tool") then
+            if hcProcessed then hcProcessed[child] = nil end
+            hcOnToolAdded(child)
+        elseif HandleMap[child.Name] then hcApplyHandles(char) end
+    end)
+    hcApplyHandles(char)
+    for _, t in ipairs(char:GetChildren()) do
+        if t:IsA("Tool") then
+            if hcProcessed then hcProcessed[t] = nil end
+            hcOnToolAdded(t)
+        end
+    end
+end
+local hcBackpack = lp:FindFirstChild("Backpack") or lp:WaitForChild("Backpack", 10)
+if hcBackpack then
+    hcBackpack.ChildAdded:Connect(hcOnToolAdded)
+    hcBackpack.ChildAdded:Connect(function(_tool)
+        if _tool:IsA("Tool") and hcProcessed then hcProcessed[_tool] = nil end
+    end)
+end
+if lp.Character then
+    hcConnectCharacter(lp.Character)
+    lp.Character.ChildRemoved:Connect(function(child)
+        if child:IsA("Tool") and hcProcessed then hcProcessed[child] = nil end
+    end)
+end
+lp.CharacterAdded:Connect(function(char)
+    hcProcessed = setmetatable({}, { __mode = "k" })
+    task.wait(0.5)
+    hcConnectCharacter(char)
+    char.ChildRemoved:Connect(function(child)
+        if child:IsA("Tool") and hcProcessed then hcProcessed[child] = nil end
+    end)
+    local bp = lp:FindFirstChild("Backpack") or lp:WaitForChild("Backpack", 10)
+    if bp then
+        for _, t in ipairs(bp:GetChildren()) do hcOnToolAdded(t) end
+        bp.ChildAdded:Connect(function(_tool)
+            if _tool:IsA("Tool") and hcProcessed then hcProcessed[_tool] = nil end
+        end)
+    end
+end)
+getgenv().hcApplySkin      = hcApplySkin
+getgenv().hcApplyKnife     = hcApplyKnife
+getgenv().hcApplyHandles   = hcApplyHandles
+getgenv().hcApplyBeamChanger = hcApplyBeamChanger
+getgenv().hcProcessed      = hcProcessed
+local skinSection = UI.createSection(tabSkin, "HC Skin Changer", "left")
+UI.addButton(skinSection, "Reapply Skins", function()
+	if not isHC then return end
+	if getgenv().hcProcessed then getgenv().hcProcessed = setmetatable({}, {__mode="k"}) end
+	local char = client.Character
+	local bp   = client:FindFirstChild("Backpack")
+	local function reapply(t)
+		if not t:IsA("Tool") then return end
+		if getgenv().hcApplySkin  then pcall(getgenv().hcApplySkin,  t) end
+		if getgenv().hcApplyKnife then pcall(getgenv().hcApplyKnife, t) end
+	end
+	if char then for _, t in ipairs(char:GetChildren()) do reapply(t) end end
+	if bp   then for _, t in ipairs(bp:GetChildren())   do reapply(t) end end
+	if getgenv().hcApplyHandles and char then pcall(getgenv().hcApplyHandles, char) end
+end)
+UI.addButton(skinSection, "Strip All Skins", function()
+	if not isHC then return end
+	for _, wep in ipairs(hcWeapons) do Flags["HC_" .. wep] = "Default" end
+	Flags["HC_Knife"] = "Default"
+	if getgenv().hcProcessed then getgenv().hcProcessed = setmetatable({}, {__mode="k"}) end
+	local char = client.Character
+	local bp   = client:FindFirstChild("Backpack")
+	local function strip(t)
+		if not t:IsA("Tool") then return end
+		if getgenv().restoreOriginalSkin then pcall(getgenv().restoreOriginalSkin, t) end
+		local _hh = t:FindFirstChild("Handle")
+		if _hh then _hh.Transparency = 0 end
+	end
+	if char then for _, t in ipairs(char:GetChildren()) do strip(t) end end
+	if bp   then for _, t in ipairs(bp:GetChildren())   do strip(t) end end
+end)
+UI.addToggle(skinSection, "Hood Custom Skins", Flags["HCSkinEnabled"] or false, function(val)
+	if not isHC then return end
+	Flags["HCSkinEnabled"] = val
+	getgenv().RELAPSE.skins.HC.Enabled = val
+	if val then
+		task.spawn(function()
+			local char = client.Character
+			local bp   = client:FindFirstChild("Backpack")
+			local function applyTool(t)
+				if not t:IsA("Tool") then return end
+				if getgenv().hcProcessed then getgenv().hcProcessed[t] = nil end
+				if getgenv().hcApplySkin  then pcall(getgenv().hcApplySkin,  t) end
+				if getgenv().hcApplyKnife then pcall(getgenv().hcApplyKnife, t) end
+			end
+			if char then for _, t in ipairs(char:GetChildren()) do applyTool(t) end end
+			if bp   then for _, t in ipairs(bp:GetChildren())   do applyTool(t) end end
+		end)
+	else
+		task.spawn(function()
+			local char = client.Character
+			local bp   = client:FindFirstChild("Backpack")
+			local function strip(t)
+				if not t:IsA("Tool") then return end
+				if getgenv().restoreOriginalSkin then pcall(getgenv().restoreOriginalSkin, t) end
+				local _hh = t:FindFirstChild("Handle")
+				if _hh then _hh.Transparency = 0 end
+			end
+			if char then for _, t in ipairs(char:GetChildren()) do strip(t) end end
+			if bp   then for _, t in ipairs(bp:GetChildren())   do strip(t) end end
+			if getgenv().hcProcessed then getgenv().hcProcessed = setmetatable({}, {__mode="k"}) end
+		end)
+	end
+end, function() return Flags["HCSkinEnabled"] end)
+for _, wep in ipairs(hcWeapons) do
+	UI.addDropdown(skinSection, wep, hcGunSkins, Flags["HC_" .. wep] or "Default", function(val)
+		if not isHC then return end
+		Flags["HC_" .. wep] = val
+		getgenv().RELAPSE.skins.HC[wep] = val
+		if not Flags["HCSkinEnabled"] then return end
+		local char = client.Character
+		local bp   = client:FindFirstChild("Backpack")
+		local toolName = "[" .. wep .. "]"
+		local function reapply(t)
+			if t.Name == toolName then
+				if getgenv().hcProcessed then getgenv().hcProcessed[t] = nil end
+				if getgenv().hcApplySkin  then pcall(getgenv().hcApplySkin,  t) end
+			end
+		end
+		if char then for _, t in ipairs(char:GetChildren()) do reapply(t) end end
+		if bp   then for _, t in ipairs(bp:GetChildren())   do reapply(t) end end
+		if getgenv().hcApplyHandles and char then pcall(getgenv().hcApplyHandles, char) end
+	end, function() return Flags["HC_" .. wep] end)
+end
+local beamSection = UI.createSection(tabSkin, "Bullet Beam", "left")
+UI.addToggle(beamSection, "Beam Changer", Flags["HCBeamEnabled"] or false, function(val)
+	if not isHC then return end
+	Flags["HCBeamEnabled"] = val
+	getgenv().RELAPSE.skins.HC.BeamEnabled = val
+	if val then
+		if getgenv().hcApplyBeamChanger then pcall(getgenv().hcApplyBeamChanger) end
+	end
+end, function() return Flags["HCBeamEnabled"] end)
+local BEAM_LIST = {}
+for _, s in ipairs(hcBeamSkins) do table.insert(BEAM_LIST, s) end
+pcall(function()
+	local beams = game:GetService("ReplicatedStorage"):FindFirstChild("BulletBeams")
+	if beams then
+		local seen = {}; for _, s in ipairs(BEAM_LIST) do seen[s] = true end
+		for _, child in ipairs(beams:GetChildren()) do
+			if not seen[child.Name] and child.Name ~= "None" and child.Name ~= "Lightning" then
+				seen[child.Name] = true; table.insert(BEAM_LIST, child.Name)
+			end
+		end
+	end
+end)
+for _, wep in ipairs(hcWeapons) do
+	UI.addDropdown(beamSection, wep .. " Beam", BEAM_LIST, Flags["HCBeam_" .. wep] or "Default", function(val)
+		if not isHC then return end
+		Flags["HCBeam_" .. wep] = val
+		getgenv().RELAPSE.skins.HC.Beams[wep] = val
+		if Flags["HCBeamEnabled"] then
+			if getgenv().hcApplyBeamChanger then pcall(getgenv().hcApplyBeamChanger) end
+		end
+	end, function() return Flags["HCBeam_" .. wep] end)
+end
+local knifeSection = UI.createSection(tabSkin, "Knife Changer", "left")
+UI.addToggle(knifeSection, "Enable Knife Changer", Flags["KnifeChangerEnabled"] or false, function(val)
+	if not isHC then return end
+	Flags["KnifeChangerEnabled"] = val
+	getgenv().RELAPSE.skins.HC.KnifeEnabled = val
+	if not val then
+		Flags["HC_Knife"] = "Default"
+		local char = client.Character
+		local bp   = client:FindFirstChild("Backpack")
+		local function strip(t)
+			if t.Name == "[Knife]" or t.Name:lower():find("knife") then
+				if getgenv().restoreOriginalSkin then pcall(getgenv().restoreOriginalSkin, t) end
+				local _hh = t:FindFirstChild("Handle")
+				if _hh then _hh.Transparency = 0 end
+			end
+		end
+		if char then for _, t in ipairs(char:GetChildren()) do strip(t) end end
+		if bp   then for _, t in ipairs(bp:GetChildren())   do strip(t) end end
+	end
+end, function() return Flags["KnifeChangerEnabled"] end)
+UI.addDropdown(knifeSection, "Knife Skin", hcKnifeSkins, Flags["HC_Knife"] or "Default", function(val)
+	if not isHC then return end
+	if not Flags["KnifeChangerEnabled"] then return end
+	Flags["HC_Knife"] = val
+	getgenv().RELAPSE.skins.HC.Knife = val
+	local char = client.Character
+	local bp   = client:FindFirstChild("Backpack")
+	local function reapply(t)
+		if t.Name == "[Knife]" or t.Name:lower():find("knife") then
+			if getgenv().hcProcessed then getgenv().hcProcessed[t] = nil end
+			if getgenv().hcApplyKnife then pcall(getgenv().hcApplyKnife, t) end
+		end
+	end
+	if char then for _, t in ipairs(char:GetChildren()) do reapply(t) end end
+	if bp   then for _, t in ipairs(bp:GetChildren())   do reapply(t) end end
+end, function() return Flags["HC_Knife"] end)
+end)();
+	task.defer(function()
