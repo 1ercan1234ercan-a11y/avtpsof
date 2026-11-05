@@ -1,0 +1,623 @@
+	local _espData = {}
+	local _npcEspData = {}
+	local function _newDraw(t, props)
+		local d = Drawing.new(t)
+		for k, v in pairs(props) do d[k] = v end
+		registerDrawing(d)
+		return d
+	end
+	local function _espRemove(plr)
+		local d = _espData[plr]; if not d then return end
+		local skip = {corners=true}
+		for k, obj in pairs(d) do
+			if not skip[k] and type(obj) == "userdata" then
+				pcall(function() obj:Remove() end)
+			end
+		end
+		if d.corners then
+			for _, l in ipairs(d.corners) do pcall(function() l:Remove() end) end
+		end
+		_espData[plr] = nil
+	end
+	local function _espCreate(plr)
+		if plr == client or _espData[plr] then return end
+		local d = {}
+		d.box     = _newDraw("Square", {Thickness=1, Filled=false, Visible=false})
+		d.boxFill = _newDraw("Square", {Thickness=1, Filled=true,  Visible=false})
+		d.tracer  = _newDraw("Line",   {Thickness=1, Visible=false})
+		d.name    = _newDraw("Text",   {Size=13, Font=2, Outline=true, Center=true,  Visible=false})
+		d.dist    = _newDraw("Text",   {Size=11, Font=2, Outline=true, Center=true,  Visible=false})
+		d.hpText  = _newDraw("Text",   {Size=11, Font=2, Outline=true, Center=true,  Visible=false})
+		d.wepText = _newDraw("Text",   {Size=11, Font=2, Outline=true, Center=true,  Visible=false})
+		d.hbar    = _newDraw("Square", {Thickness=1, Filled=true,  Visible=false})
+		d.hfill   = _newDraw("Square", {Thickness=1, Filled=true,  Visible=false})
+		d.hborder = _newDraw("Square", {Thickness=1, Filled=false, Visible=false})
+		d.hcap    = _newDraw("Line",   {Thickness=2, Visible=false})
+		d.abar    = _newDraw("Square", {Thickness=1, Filled=true,  Visible=false})
+		d.afill   = _newDraw("Square", {Thickness=1, Filled=true,  Visible=false})
+		d.corners = {}
+		for i = 1, 8 do d.corners[i] = _newDraw("Line", {Thickness=1, Visible=false}) end
+		_espData[plr] = d
+	end
+	getgenv().__RELAPSE_ESP_CREATE = _espCreate
+	local function _hideAll(d)
+		d.box.Visible=false; d.boxFill.Visible=false
+		if d.tracer  then d.tracer.Visible=false  end
+		if d.name    then d.name.Visible=false    end
+		if d.dist    then d.dist.Visible=false    end
+		if d.hpText  then d.hpText.Visible=false  end
+		if d.wepText then d.wepText.Visible=false end
+		d.hbar.Visible=false; d.hfill.Visible=false
+		if d.hborder then d.hborder.Visible=false end
+		if d.hcap    then d.hcap.Visible=false    end
+		if d.abar    then d.abar.Visible=false    end
+		if d.afill   then d.afill.Visible=false   end
+		for _, l in ipairs(d.corners) do l.Visible=false end
+	end
+	local function _espUpdate(plr, d)
+		local ec   = getgenv().RELAPSE.esp
+		local function rgbColor(base)
+			if not ec.espRGB then return base end
+			local spd = ec.espRGBSpeed or 5
+			local hue = (tick() * spd / 10) % 1
+			local _, s, v = (base or Color3.fromRGB(255,255,255)):ToHSV()
+			if s == 0 then s = 1 end
+			if v == 0 then v = 1 end
+			return Color3.fromHSV(hue, s, v)
+		end
+		local char = plr.Character
+		if not char then _hideAll(d); return end
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if not hrp or not hum then _hideAll(d); return end
+		local showOn = ec.espShowOn or "Enemy, NPC"
+		local isTeam = plr.Team and client.Team and plr.Team == client.Team
+		if showOn == "Enemy"      and isTeam      then _hideAll(d); return end
+		if showOn == "Team"       and not isTeam  then _hideAll(d); return end
+		if showOn == "Enemy, NPC" and isTeam      then _hideAll(d); return end
+		if ec.Teamcheck and isTeam then _hideAll(d); return end
+		if ec.FriendCheck and isFriend(plr) then _hideAll(d); return end
+		do
+			local f = (getgenv().__RELAPSE_PL_FLAGS or {})[plr.UserId]
+			if f and f.whitelist then _hideAll(d); return end
+		end
+		if getgenv().RELAPSE.playerList and getgenv().RELAPSE.playerList.ESPOnly then
+			local _plf = getgenv().__RELAPSE_PL_FLAGS
+			local f = _plf and _plf[plr.UserId]
+			local onList = false
+			if f then for _, v in pairs(f) do if v == true then onList = true; break end end end
+			if not onList then _hideAll(d); return end
+		end
+		do
+			local _plf = getgenv().__RELAPSE_PL_FLAGS or {}
+			local anyTarget = false
+			for _, p in ipairs(Players:GetPlayers()) do
+				local pf = _plf[p.UserId]
+				if pf and pf.target then anyTarget = true; break end
+			end
+			if anyTarget then
+				local f = _plf[plr.UserId]
+				if not (f and (f.target or f.highPriority)) then _hideAll(d); return end
+			end
+		end
+		local dist = (hrp.Position - camera.CFrame.Position).Magnitude
+		if dist < 3 then _hideAll(d); return end
+		if dist > (ec.espMaxDist or 3000) then _hideAll(d); return end
+		if ec.WallCheck then
+			local ro     = camera.CFrame.Position
+			local rd     = hrp.Position - ro
+			local params = RaycastParams.new()
+			params.FilterType = Enum.RaycastFilterType.Exclude
+			local filterList = {client.Character, char}
+			params.FilterDescendantsInstances = filterList
+			local origin  = ro
+			local blocked = false
+			for _ = 1, 8 do
+				local result = workspace:Raycast(origin, rd, params)
+				if not result then break end
+				if result.Instance.Transparency >= 0.5 then
+					filterList[#filterList + 1] = result.Instance
+					params.FilterDescendantsInstances = filterList
+					origin = result.Position + rd.Unit * 0.1
+				else
+					blocked = true; break
+				end
+			end
+			if blocked then _hideAll(d); return end
+		end
+		local vp    = camera.ViewportSize
+		local hrpSP, hrpOn = camera:WorldToViewportPoint(hrp.Position)
+		if not hrpOn or hrpSP.Z <= 0 then _hideAll(d); return end
+		local bW, bH, bX, bY
+		if ec.espDynamic then
+			local scrMinX, scrMinY =  math.huge,  math.huge
+			local scrMaxX, scrMaxY = -math.huge, -math.huge
+			local hasValid = false
+			local vpY = vp.Y
+			local focalLen = vpY / (2 * math.tan(math.rad(camera.FieldOfView) * 0.5))
+			for _, part in ipairs(char:GetDescendants()) do
+				if part:IsA("BasePart") and part.Transparency < 1
+					and part.Name ~= "HumanoidRootPart" then
+					local pSP, pOn = camera:WorldToViewportPoint(part.Position)
+					if not pOn or pSP.Z <= 0 then continue end
+					hasValid = true
+					local depthScale = focalLen / pSP.Z
+					local cf  = part.CFrame
+					local sz  = part.Size
+					local hx, hy, hz = sz.X*0.5, sz.Y*0.5, sz.Z*0.5
+					local rx, uy, lz = cf.RightVector, cf.UpVector, cf.LookVector
+					local ex = (math.abs(rx.X*hx)+math.abs(uy.X*hy)+math.abs(lz.X*hz))*depthScale
+					local ey = (math.abs(rx.Y*hx)+math.abs(uy.Y*hy)+math.abs(lz.Y*hz))*depthScale
+					if pSP.X-ex < scrMinX then scrMinX = pSP.X-ex end
+					if pSP.X+ex > scrMaxX then scrMaxX = pSP.X+ex end
+					if pSP.Y-ey < scrMinY then scrMinY = pSP.Y-ey end
+					if pSP.Y+ey > scrMaxY then scrMaxY = pSP.Y+ey end
+				end
+			end
+			if not hasValid then _hideAll(d); return end
+			bW = math.max(scrMaxX - scrMinX, 4)
+			bH = math.max(scrMaxY - scrMinY, 6)
+			bX = scrMinX
+			bY = scrMinY
+			if scrMaxX < 0 or scrMinX > vp.X or scrMaxY < 0 or scrMinY > vp.Y then
+				_hideAll(d); return
+			end
+		else
+			if hrpSP.X < -150 or hrpSP.X > vp.X+150 or
+			   hrpSP.Y < -150 or hrpSP.Y > vp.Y+150 then
+				_hideAll(d); return
+			end
+			local head = char:FindFirstChild("Head")
+			local topSP, topOn = camera:WorldToViewportPoint(
+				head and (head.Position+Vector3.new(0,0.7,0)) or hrp.Position+Vector3.new(0,3,0))
+			local botSP, botOn = camera:WorldToViewportPoint(hrp.Position-Vector3.new(0,3,0))
+			if topOn and botOn then
+				bH = math.max(math.abs(topSP.Y - botSP.Y), 6)
+			else
+				local z = math.max(hrpSP.Z, 1)
+				bH = math.max((6 / (2 * z * math.tan(math.rad(camera.FieldOfView)/2))) * vp.Y * 2, 6)
+			end
+			bW = bH * 0.45
+			bX = hrpSP.X - bW/2
+			bY = topOn and topSP.Y or (hrpSP.Y - bH/2)
+		end
+		local ts = ec.espTextSize or 15
+		local ol = ec.espTextOutline ~= false
+		local cornered = ec.espBoxShape == "Cornered"
+		local _fontMap = { UI=0, System=1, Plex=2, Monospace=3 }
+		local espFontNum = _fontMap[ec.espFont] or 2
+		local textPosBottom = (ec.espTextPos == "Bottom")
+		if ec.espBoxes and bH >= 6 then
+			local col = rgbColor(ec.espBoxColor or Color3.fromRGB(255,255,255))
+			if cornered then
+				d.box.Visible = false
+				local cL = math.min(bW,bH) * 0.25
+				local pts = {
+					{bX,    bY,    cL,  0,  0,   cL},
+					{bX+bW, bY,   -cL,  0,  0,   cL},
+					{bX,    bY+bH, cL,  0,  0,  -cL},
+					{bX+bW, bY+bH,-cL,  0,  0,  -cL},
+				}
+				for i, p in ipairs(pts) do
+					local lh = d.corners[(i-1)*2+1]
+					local lv = d.corners[(i-1)*2+2]
+					lh.From=Vector2.new(p[1],p[2]); lh.To=Vector2.new(p[1]+p[3],p[2]+p[4]); lh.Color=col; lh.Visible=true
+					lv.From=Vector2.new(p[1],p[2]); lv.To=Vector2.new(p[1]+p[5],p[2]+p[6]); lv.Color=col; lv.Visible=true
+				end
+			else
+				for _, l in ipairs(d.corners) do l.Visible=false end
+				d.box.Color=col; d.box.Size=Vector2.new(bW,bH); d.box.Position=Vector2.new(bX,bY); d.box.Visible=true
+			end
+			if ec.espBoxFilled then
+				d.boxFill.Color        = rgbColor(ec.espBoxFillColor or col)
+				d.boxFill.Transparency = ec.espBoxFillTransparency or 0.65
+				d.boxFill.Size=Vector2.new(bW,bH); d.boxFill.Position=Vector2.new(bX,bY); d.boxFill.Visible=true
+			else d.boxFill.Visible=false end
+		else
+			d.box.Visible=false; d.boxFill.Visible=false
+			for _, l in ipairs(d.corners) do l.Visible=false end
+		end
+		if ec.espNames then
+			local nt  = ec.espNameType or "Display Name"
+			local txt = nt=="Username" and plr.Name
+				or nt=="Both" and plr.DisplayName.." (@"..plr.Name..")"
+				or plr.DisplayName
+			d.name.Text=txt; d.name.Size=ts; d.name.Font=espFontNum
+			local isStickyTarget = _stickyTarget and _stickyTarget == plr
+				and getgenv().RELAPSE.silent.Settings.StickyAim.Enabled
+				and getgenv().RELAPSE.silent.Settings.StickyAim.ESPHighlight
+			local isTarget = (not isStickyTarget) and silentLockedTarget and type(silentLockedTarget)=="userdata"
+				and silentLockedTarget:IsA("Player") and silentLockedTarget == plr
+			local nameCol = isStickyTarget
+				and (getgenv().RELAPSE.silent.Settings.StickyAim.ESPColor or Color3.fromRGB(255, 255, 255))
+				or (isTarget
+					and (ec.espTargetNameColor or Color3.fromRGB(255, 255, 255))
+					or rgbColor(ec.espNameColor or Color3.fromRGB(205,160,90)))
+			d.name.Color=nameCol
+			d.name.Outline=ol; d.name.OutlineColor=rgbColor(ec.espNameOutlineColor or Color3.fromRGB(0,0,0))
+			d.name.Position=Vector2.new(bX+bW/2, textPosBottom and (bY+bH+2) or (bY-ts-2)); d.name.Visible=true
+		else d.name.Visible=false end
+		if ec.espDistance then
+			local val = ec.espDistType=="Meters"
+				and (math.floor(dist*0.3048).."m")
+				or  (math.floor(dist).." studs")
+			d.dist.Text=val; d.dist.Size=math.max(ts-2,8); d.dist.Font=espFontNum
+			d.dist.Color=rgbColor(ec.espDistColor or Color3.fromRGB(200,200,200))
+			d.dist.Outline=ol; d.dist.OutlineColor=rgbColor(ec.espDistOutlineColor or Color3.fromRGB(0,0,0))
+			d.dist.Position=Vector2.new(bX+bW/2, textPosBottom and (bY-math.max(ts-2,8)-2) or (bY+bH+2)); d.dist.Visible=true
+		else d.dist.Visible=false end
+		if ec.espHealth then
+			local mx = hum.MaxHealth
+			local safeMx = (mx ~= mx or mx >= 1e8) and 100 or math.max(mx, 1)
+			local hpRaw = math.clamp(hum.Health / safeMx, 0, 1)
+			if d._hp == nil then d._hp = hpRaw end
+			d._hp = d._hp + (hpRaw - d._hp) * 0.3
+			local hpR = d._hp
+			local barW  = 2
+			local barX  = bX - barW - 3
+			local barY  = bY
+			local barH  = bH
+			local fH    = math.max(barH * hpR, 1)
+			local fY    = barY + barH - fH
+			local hpCol
+			if ec.espRGB then
+				local spd  = ec.espRGBSpeed or 5
+				local cycleH = (tick() * spd / 10) % 1
+				local dimV   = 0.35 + 0.65 * hpR
+				hpCol = Color3.fromHSV(cycleH, 1, dimV)
+			else
+				local base        = ec.espHealthColor or Color3.fromRGB(0, 200, 80)
+				local baseH, bS, bV  = Color3.toHSV(base)
+				local outH = baseH * hpR
+				local outS = math.min(bS + (1 - bS) * (1 - hpR), 1)
+				local outV = math.max(bV, 0.75)
+				hpCol = Color3.fromHSV(outH, outS, outV)
+			end
+			d.hborder.Color     = Color3.fromRGB(0, 0, 0)
+			d.hborder.Thickness = 1
+			d.hborder.Size      = Vector2.new(barW + 2, barH + 2)
+			d.hborder.Position  = Vector2.new(barX - 1, barY - 1)
+			d.hborder.Visible   = true
+			d.hbar.Color    = Color3.fromRGB(20, 20, 20)
+			d.hbar.Size     = Vector2.new(barW, barH)
+			d.hbar.Position = Vector2.new(barX, barY)
+			d.hbar.Visible  = true
+			d.hfill.Color    = hpCol
+			d.hfill.Size     = Vector2.new(barW, fH)
+			d.hfill.Position = Vector2.new(barX, fY)
+			d.hfill.Visible  = true
+			if hpR > 0.03 then
+				d.hcap.Color        = Color3.fromRGB(255, 255, 255)
+				d.hcap.Transparency = 0
+				d.hcap.Thickness    = 1
+				d.hcap.From         = Vector2.new(barX,        fY)
+				d.hcap.To           = Vector2.new(barX + barW, fY)
+				d.hcap.Visible      = true
+			else
+				d.hcap.Visible = false
+			end
+		else
+			d._hp = nil
+			d.hbar.Visible=false; d.hfill.Visible=false
+			d.hborder.Visible=false; d.hcap.Visible=false
+		end
+		if ec.espHealthText then
+			local mx = hum.MaxHealth
+			local safeMx = (mx ~= mx or mx >= 1e8) and 100 or math.max(mx, 1)
+			local hp = math.floor(hum.Health)
+			local mxFloor = math.floor(safeMx)
+			if ec.espHideHealthFull and hp >= mxFloor then
+				d.hpText.Visible=false
+			else
+				d.hpText.Text=hp.." / "..mxFloor; d.hpText.Size=math.max(ts-3,8); d.hpText.Font=espFontNum
+				d.hpText.Color=rgbColor(ec.espHealthTextColor or Color3.fromRGB(255,255,255))
+				d.hpText.Outline=ol; d.hpText.OutlineColor=ec.espHealthTextOutlineColor or Color3.fromRGB(0,0,0)
+				local yOff
+				if textPosBottom then
+					yOff = bY - math.max(ts-3,8) - 2
+				else
+					yOff = bY+bH+2+(ec.espDistance and (math.max(ts-2,8)+2) or 0)
+				end
+				d.hpText.Position=Vector2.new(bX+bW/2,yOff); d.hpText.Visible=true
+			end
+		else d.hpText.Visible=false end
+		if ec.espArmorBar then
+			local armorHp, armorMax = 0, 100
+			local plrObj = Players:GetPlayerFromCharacter(char)
+			local function tryVal(parent, name)
+				if not parent then return nil end
+				local v = parent:FindFirstChild(name)
+				if v and (v:IsA("NumberValue") or v:IsA("IntValue")) then return v.Value end
+				local ok, attr = pcall(function() return parent:GetAttribute(name) end)
+				if ok and type(attr) == "number" then return attr end
+				return nil
+			end
+			local function tryFolder(parent)
+				if not parent then return nil, nil end
+				for _, name in ipairs({"Armor","Shield","Vest","ArmorHP","ArmorValue","Armour","armor","shield"}) do
+					local v = tryVal(parent, name)
+					if v then
+						local mx = tryVal(parent,"MaxArmor") or tryVal(parent,"MaxShield") or tryVal(parent,"MaxVest") or 100
+						return v, mx
+					end
+				end
+				return nil, nil
+			end
+			local raw, rawMax = tryFolder(char)
+			if not raw then
+				for _, folderName in ipairs({"Stats","leaderstats","PlayerStats","Data"}) do
+					raw, rawMax = tryFolder(char:FindFirstChild(folderName))
+					if raw then break end
+					if plrObj then
+						raw, rawMax = tryFolder(plrObj:FindFirstChild(folderName))
+						if raw then break end
+					end
+				end
+			end
+			if not raw and plrObj then raw, rawMax = tryFolder(plrObj) end
+			if raw then
+				armorHp  = raw
+				armorMax = rawMax or 100
+			end
+			if armorMax ~= armorMax or armorMax >= 1e8 then armorMax = 100 end
+			armorMax = math.max(armorMax, 1)
+			local aRaw = math.clamp(armorHp / armorMax, 0, 1)
+			if d._armor == nil then d._armor = aRaw end
+			d._armor = d._armor + (aRaw - d._armor) * 0.3
+			local aR = d._armor
+			local barX2 = bX + bW + 2
+			local barY2 = bY
+			local barW2 = 2
+			local barH2 = bH
+			local aFH   = math.max(barH2 * aR, 1)
+			local aFY   = barY2 + barH2 - aFH
+			local aCol  = rgbColor(ec.espArmorBarColor or Color3.fromRGB(140,210,255))
+			d.abar.Color    = Color3.fromRGB(20, 20, 20)
+			d.abar.Size     = Vector2.new(barW2, barH2)
+			d.abar.Position = Vector2.new(barX2, barY2)
+			d.abar.Visible  = true
+			d.afill.Color    = aCol
+			d.afill.Size     = Vector2.new(barW2, aFH)
+			d.afill.Position = Vector2.new(barX2, aFY)
+			d.afill.Visible  = true
+		else
+			d._armor = nil
+			d.abar.Visible = false; d.afill.Visible = false
+		end
+		if ec.espTracers then
+			local orig = ec.espTracerOrigin or "Bottom"
+			local fX   = orig=="Cursor" and (mouse.X + _guiInset.X) or vp.X/2
+			local fY   = orig=="Center" and vp.Y/2 or orig=="Top" and 0 or orig=="Cursor" and (mouse.Y + _guiInset.Y) or vp.Y
+			d.tracer.Color=rgbColor(ec.espTracerColor or Color3.fromRGB(255,255,255))
+			d.tracer.From=Vector2.new(fX,fY); d.tracer.To=Vector2.new(hrpSP.X,hrpSP.Y); d.tracer.Visible=true
+		else d.tracer.Visible=false end
+		if ec.espWeapon then
+			local tool = char:FindFirstChildOfClass("Tool")
+			if tool then
+				d.wepText.Text=tool.Name; d.wepText.Size=math.max(ts-3,8); d.wepText.Font=espFontNum
+				d.wepText.Color=rgbColor(ec.espWeaponColor or Color3.fromRGB(255,255,255))
+				d.wepText.Outline=ol; d.wepText.OutlineColor=Color3.fromRGB(0,0,0)
+				d.wepText.Position=Vector2.new(bX+bW/2, textPosBottom and (bY+bH+ts+4) or (bY-ts*2-4)); d.wepText.Visible=true
+			else d.wepText.Visible=false end
+		else d.wepText.Visible=false end
+	end
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= client then _espCreate(p) end
+	end
+	Players.PlayerAdded:Connect(function(p)
+		if getgenv().__RELAPSE_ESP_ENABLED then _espCreate(p) end
+	end)
+	Players.PlayerRemoving:Connect(function(p) _espRemove(p) end)
+	getgenv().__RELAPSE_ESP_REMOVE = _espRemove
+	getgenv().__RELAPSE_ESP_HIDEALL = function()
+		for _, d in pairs(_espData) do _hideAll(d) end
+		for _, d in pairs(_npcEspData) do _hideAll(d) end
+	end
+	silentLockedTarget = nil
+	UserInputService.InputBegan:Connect(function(input, gp)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			local _ss = getgenv().RELAPSE.silent.Settings
+			if _ss and _ss.General and _ss.General.Enabled then
+				silentHitRoll = math.random(1, 100) <= (_ss.HitChance or 100)
+				_prevSilentTarget = nil
+			end
+		end
+	end)
+	do
+	local _chamsScriptRunning = true
+	local function _getColorFromFlag(flagName, default, rgbFlag, rgbSpeedFlag)
+		local cc = getgenv().RELAPSE.esp
+		if cc[rgbFlag] then
+			local spd = cc[rgbSpeedFlag] or 5
+			return Color3.fromHSV((tick() * spd / 10) % 1, 1, 1)
+		end
+		return cc[flagName] or default
+	end
+	local function _getChamsColor(flagName, default)
+		local cc = getgenv().RELAPSE.esp
+		local col = _getColorFromFlag(flagName, default, "ChamsRGBMode", "ChamsRGBSpeed")
+		if cc.ChamsGradient then
+			local gradA = cc.ChamsGradientA or Color3.fromRGB(255, 0, 128)
+			local gradB = cc.ChamsGradientB or Color3.fromRGB(0, 180, 255)
+			local t = 0.5 + 0.5 * math.sin(tick() * ((cc.ChamsSpinSpeed or 12) / 4))
+			return gradA:Lerp(gradB, t)
+		end
+		return col
+	end
+	local function _chamsHasCheck(tbl, val)
+		if type(tbl) ~= "table" then return false end
+		for _, v in ipairs(tbl) do if v == val then return true end end
+		return false
+	end
+	local function _isCharVisible(char)
+		local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
+		if not hrp then return false end
+		local rp = RaycastParams.new()
+		rp.FilterType = Enum.RaycastFilterType.Exclude
+		rp.FilterDescendantsInstances = {client.Character, char}
+		local res = workspace:Raycast(camera.CFrame.Position, hrp.Position - camera.CFrame.Position, rp)
+		return not res
+	end
+	local function _applyChamsHighlight(char, fillColor, outlineColor, fillTrans, outlineTrans, alwaysOnTop, outlineOnly, glowAmount, textureId)
+		if not char then return end
+		local cc = getgenv().RELAPSE.esp
+		local fillEnabled    = cc.ChamsFillEnabled    ~= false
+		local outlineEnabled = cc.ChamsOutlineEnabled ~= false
+		local useTexture = textureId and textureId ~= "" and textureId ~= "None"
+		if useTexture then
+			local hl = char:FindFirstChild("_Chams")
+			if hl then hl:Destroy() end
+			local targetMat = Enum.Material[textureId] or Enum.Material.ForceField
+			for _, p in ipairs(char:GetDescendants()) do
+				if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+					pcall(function()
+						if p:GetAttribute("_origMat") == nil then
+							p:SetAttribute("_origMat",   p.Material.Name)
+							p:SetAttribute("_origCol",   tostring(p.Color))
+							p:SetAttribute("_origTrans", p.Transparency)
+						end
+						p.Material     = targetMat
+						p.Color        = fillColor
+						p.Transparency = fillTrans
+					end)
+				end
+			end
+		else
+			for _, p in ipairs(char:GetDescendants()) do
+				if p:IsA("BasePart") and p:GetAttribute("_origMat") ~= nil then
+					pcall(function()
+						local mname = p:GetAttribute("_origMat")
+						p.Material    = Enum.Material[mname] or Enum.Material.Plastic
+						local colStr  = p:GetAttribute("_origCol")
+						if type(colStr) == "string" then
+							local r,g,b = colStr:match("%((.+), (.+), (.+)%)")
+							if r then p.Color = Color3.new(tonumber(r), tonumber(g), tonumber(b)) end
+						elseif typeof(colStr) == "Color3" then
+							p.Color = colStr
+						end
+						p.Transparency = p:GetAttribute("_origTrans") or 0
+						p:SetAttribute("_origMat",   nil)
+						p:SetAttribute("_origCol",   nil)
+						p:SetAttribute("_origTrans", nil)
+					end)
+				end
+			end
+			local hl = char:FindFirstChild("_Chams")
+			if not hl then hl = Instance.new("Highlight"); hl.Name = "_Chams" end
+			hl.FillColor           = fillColor
+			hl.OutlineColor        = outlineColor
+			hl.FillTransparency    = (not fillEnabled or outlineOnly) and 1 or fillTrans
+			hl.OutlineTransparency = not outlineEnabled and 1 or outlineTrans
+			hl.DepthMode = alwaysOnTop and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded
+			if hl.Parent ~= char then hl.Parent = char end
+		end
+		if glowAmount > 0 then
+			local blur = char:FindFirstChild("_ChamsBlur")
+			if not blur then blur = Instance.new("BlurEffect"); blur.Name = "_ChamsBlur"; blur.Parent = char end
+			blur.Size = glowAmount * 20
+		else
+			local blur = char:FindFirstChild("_ChamsBlur"); if blur then blur:Destroy() end
+		end
+	end
+	local function _removeChamsHighlight(char)
+		if not char then return end
+		local hl = char:FindFirstChild("_Chams"); if hl then hl:Destroy() end
+		local blur = char:FindFirstChild("_ChamsBlur"); if blur then blur:Destroy() end
+		for _, p in ipairs(char:GetDescendants()) do
+			if p:IsA("BasePart") and p:GetAttribute("_origMat") ~= nil then
+				pcall(function()
+					p.Material    = Enum.Material[p:GetAttribute("_origMat")] or Enum.Material.Plastic
+					p.Color       = p:GetAttribute("_origCol") or Color3.fromRGB(163,162,165)
+					p.Transparency = p:GetAttribute("_origTrans") or 0
+					p:SetAttribute("_origMat",   nil)
+					p:SetAttribute("_origCol",   nil)
+					p:SetAttribute("_origTrans", nil)
+				end)
+			end
+		end
+	end
+	local _chamsFrameSkip = 0
+	local _chamsHeartbeat = nil
+	local function _chamsStopHeartbeat()
+		if _chamsHeartbeat then _chamsHeartbeat:Disconnect(); _chamsHeartbeat = nil end
+	end
+	local function _runChamsUpdate()
+		pcall(function()
+			local cc = getgenv().RELAPSE.esp
+			local enabled = cc.PlayerChams
+			local targets = cc.ChamsTargets or {}
+			local showSelf   = _chamsHasCheck(targets, "Self")
+			local showOthers = _chamsHasCheck(targets, "Player")
+			local showNPCs   = _chamsHasCheck(targets, "NPC")
+			local checks = cc.ChamsChecks or {}
+			local checkWall  = _chamsHasCheck(checks, "Wall")
+			local checkDead  = _chamsHasCheck(checks, "Dead")
+			local checkEnemy = _chamsHasCheck(checks, "Enemy")
+			local checkTeam  = _chamsHasCheck(checks, "Team")
+			local fillColor    = _getChamsColor("ChamsFillColor",    Color3.fromRGB(255,255,255))
+			local outlineColor = _getChamsColor("ChamsOutlineColor",  Color3.fromRGB(0,0,0))
+			local fillTrans    = (cc.ChamsFillTransparency    or 50) / 100
+			local outlineTrans = (cc.ChamsOutlineTransparency or 0)  / 100
+			local chamsParams = {
+				fillColor, outlineColor, fillTrans, outlineTrans,
+				cc.ChamsAlwaysOnTop or false, false,
+				(cc.ChamsGlowAmount or 0) / 100,
+				cc.ChamsTexture or "",
+			}
+			if not enabled then
+				for _, p in ipairs(Players:GetPlayers()) do if p.Character then _removeChamsHighlight(p.Character) end end
+				for _, obj in ipairs(workspace:GetDescendants()) do
+					if obj:IsA("Model") and obj:FindFirstChild("_Chams") then
+						_removeChamsHighlight(obj)
+					end
+				end
+				return
+			end
+			for _, p in ipairs(Players:GetPlayers()) do
+				local char = p.Character
+				if char then
+					local isSelf = (p == client)
+					local shouldCham = isSelf and showSelf or (not isSelf and showOthers)
+					if shouldCham and not isSelf then
+						if checkTeam  and p.Team and client.Team and p.Team == client.Team then shouldCham = false end
+						if checkEnemy and p.Team and client.Team and p.Team ~= client.Team then shouldCham = false end
+					end
+					if shouldCham then
+						local hum = char:FindFirstChildOfClass("Humanoid")
+						local isDead = hum and (hum.Health <= 0)
+						if checkDead and isDead then
+							_removeChamsHighlight(char)
+						elseif checkWall and not isSelf then
+							if _isCharVisible(char) then _applyChamsHighlight(char, table.unpack(chamsParams))
+							else _removeChamsHighlight(char) end
+						else
+							_applyChamsHighlight(char, table.unpack(chamsParams))
+						end
+					else
+						_removeChamsHighlight(char)
+					end
+				end
+			end
+			for _, obj in ipairs(workspace:GetDescendants()) do
+				if obj:IsA("Model") and obj ~= client.Character and not Players:GetPlayerFromCharacter(obj) then
+					local hum = obj:FindFirstChildOfClass("Humanoid")
+					if hum then
+						if showNPCs and enabled and hum.Health > 0 then
+							if checkDead and hum.Health <= 0 then
+								_removeChamsHighlight(obj)
+							else
+								_applyChamsHighlight(obj, table.unpack(chamsParams))
+							end
+						else
+							if obj:FindFirstChild("_Chams") then
+								_removeChamsHighlight(obj)
+							end
+						end
+					end
+				end
+			end
+		end)
+	end
+	task.spawn(function()
+		while _chamsScriptRunning do
+			local cc = getgenv().RELAPSE.esp
